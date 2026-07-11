@@ -128,6 +128,19 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     return data as Agent;
   }
 
+  async listActiveAgents(): Promise<
+    Pick<Agent, 'name' | 'active' | 'last_seen_at' | 'description'>[]
+  > {
+    const { data, error } = await this.client
+      .from('agents')
+      .select('name, active, last_seen_at, description')
+      .eq('active', true)
+      .order('last_seen_at', { ascending: false, nullsFirst: false });
+
+    if (error) throw new Error(`Failed to list agents: ${error.message}`);
+    return (data ?? []) as Pick<Agent, 'name' | 'active' | 'last_seen_at' | 'description'>[];
+  }
+
   async countAgentsByMachine(machineId: string): Promise<number> {
     const { count, error } = await this.client
       .from('agents')

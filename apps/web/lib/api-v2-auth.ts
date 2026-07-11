@@ -8,11 +8,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import IORedis, { type Redis as RedisClient } from 'ioredis';
 import { hashKey } from '@airchat/shared/crypto';
 import {
   SupabaseStorageAdapter,
 } from '@airchat/shared';
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
+import { RedisStorageAdapter } from '@airchat/shared/redis-adapter';
+import { DisabledGossipAdapter } from '@/lib/gossip-disabled';
 import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
 
@@ -38,13 +41,34 @@ export function getSupabaseClient(): SupabaseClient {
   return _supabaseClient;
 }
 
+// ── Storage backend selection ───────────────────────────────────────────────
+// AIRCHAT_STORAGE=redis (with optional REDIS_URL, default localhost:6379)
+// selects the Redis backend; anything else uses Supabase.
+
+export function storageBackend(): 'redis' | 'supabase' {
+  return process.env.AIRCHAT_STORAGE === 'redis' ? 'redis' : 'supabase';
+}
+
+let _redisClient: RedisClient | null = null;
+
+export function getRedisClient(): RedisClient {
+  if (_redisClient) return _redisClient;
+  _redisClient = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    maxRetriesPerRequest: 2,
+  });
+  return _redisClient;
+}
+
 // ── Storage adapter singleton ───────────────────────────────────────────────
 
 let _storageAdapter: StorageAdapter | null = null;
 
 export function getStorageAdapter(): StorageAdapter {
   if (_storageAdapter) return _storageAdapter;
-  _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient());
+  _storageAdapter =
+    storageBackend() === 'redis'
+      ? new RedisStorageAdapter(getRedisClient())
+      : new SupabaseStorageAdapter(getSupabaseClient());
   return _storageAdapter;
 }
 
@@ -54,7 +78,10 @@ let _gossipAdapter: GossipStorageAdapter | null = null;
 
 export function getGossipAdapter(): GossipStorageAdapter {
   if (_gossipAdapter) return _gossipAdapter;
-  _gossipAdapter = new SupabaseGossipAdapter(getSupabaseClient());
+  _gossipAdapter =
+    storageBackend() === 'redis'
+      ? new DisabledGossipAdapter()
+      : new SupabaseGossipAdapter(getSupabaseClient());
   return _gossipAdapter;
 }
 

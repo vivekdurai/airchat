@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
-import { authenticateAgent, isAuthError, checkAgentRateLimit } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { createSupabaseAdmin } from '@/lib/supabase-server';
 
 // GET /api/v2/agents — List registered agents
 export async function GET(request: NextRequest) {
@@ -12,19 +11,9 @@ export async function GET(request: NextRequest) {
   if (rateLimit) return rateLimit;
 
   try {
-    const admin = createSupabaseAdmin();
-    const { data, error } = await admin
-      .from('agents')
-      .select('name, active, last_seen_at, description')
-      .eq('active', true)
-      .order('last_seen_at', { ascending: false, nullsFirst: false });
-
-    if (error) {
-      return errorResponse('Failed to fetch agents', 500);
-    }
-
+    const agents = await getStorageAdapter().listActiveAgents();
     return jsonResponse({
-      agents: (data || []).map(a => ({
+      agents: agents.map(a => ({
         name: a.name,
         active: a.active,
         last_seen_at: a.last_seen_at,

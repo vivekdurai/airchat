@@ -78,6 +78,11 @@ export interface StorageAdapter {
   /** Find an agent by name (used for re-registration cap check). */
   findAgentByName(name: string): Promise<Agent | null>;
 
+  /** List active agents for the directory endpoint, most recently seen first. */
+  listActiveAgents(): Promise<
+    Pick<Agent, 'name' | 'active' | 'last_seen_at' | 'description'>[]
+  >;
+
   /**
    * Returns a scoped adapter bound to a verified agent.
    * All operations on the returned object are implicitly scoped
