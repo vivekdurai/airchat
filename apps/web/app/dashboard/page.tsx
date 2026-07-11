@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
+
+const POLL_INTERVAL_MS = 4000;
 
 interface ChannelRow {
   id: string;
@@ -43,7 +44,6 @@ type View = { type: 'channel'; channel: ChannelRow } | { type: 'dm'; agent: Agen
 const ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 export default function DashboardPage() {
-  const supabase = useMemo(() => createSupabaseBrowser(), []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Sidebar data
@@ -77,19 +77,15 @@ export default function DashboardPage() {
   // Load sidebar data
   useEffect(() => {
     async function load() {
-      const { data: chs } = await supabase
-        .from('channels')
-        .select('id, name, type, description')
-        .order('type')
-        .order('name');
-      if (chs) setChannels(chs);
-
-      const { data: ags } = await supabase
-        .from('agents')
-        .select('id, name, active, last_seen_at, description, created_at')
-        .order('name');
-      if (ags) {
-        setAllAgents(ags);
+      const [chRes, agRes] = await Promise.all([
+        fetch('/api/admin/channels').then((r) => r.json()).catch(() => null),
+        fetch('/api/admin/agents').then((r) => r.json()).catch(() => null),
+      ]);
+      if (chRes?.channels) setChannels(chRes.channels);
+      if (agRes?.agents) {
+        setAllAgents(
+          [...agRes.agents].sort((a: AgentRow, b: AgentRow) => a.name.localeCompare(b.name))
+        );
       }
     }
     load();
@@ -104,7 +100,7 @@ export default function DashboardPage() {
     }
   }, [channels, view]);
 
-  // Load messages when view changes
+  // Load messages when view changes; poll for updates
   useEffect(() => {
     if (!view || view.type === 'search') {
       setMessages([]);
@@ -112,81 +108,41 @@ export default function DashboardPage() {
     }
 
     let cancelled = false;
-    let realtimeSub: ReturnType<typeof supabase.channel> | null = null;
 
-    async function loadAndSubscribe() {
-      let channelId: string;
+    const channelId =
+      view.type === 'channel'
+        ? view.channel.id
+        : channels.find((c) => c.name === DIRECT_MESSAGES_CHANNEL)?.id;
 
-      if (view!.type === 'channel') {
-        channelId = view!.type === 'channel' ? (view as { type: 'channel'; channel: ChannelRow }).channel.id : '';
-      } else {
-        // Find the direct-messages channel
-        const { data: dmCh } = await supabase
-          .from('channels')
-          .select('id')
-          .eq('name', DIRECT_MESSAGES_CHANNEL)
-          .single();
-        if (!dmCh || cancelled) {
-          if (!cancelled) setMessages([]);
-          return;
-        }
-        channelId = dmCh.id;
-      }
-
-      // Build the messages query with server-side filtering
-      let query = supabase
-        .from('messages')
-        .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
-        .eq('channel_id', channelId)
-        .order('created_at', { ascending: true })
-        .limit(200);
-
-      // For DM view, add server-side filter for messages involving the selected agent
-      if (view!.type === 'dm') {
-        const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
-        const agentId = (view as { type: 'dm'; agent: AgentRow }).agent.id;
-        query = query.or(`author_agent_id.eq.${agentId},content.ilike.%@${agentName}%`);
-      }
-
-      const { data } = await query;
-      if (cancelled) return;
-
-      const msgs = (data || []) as unknown as MessageRow[];
-      setMessages(msgs);
-
-      // Set up real-time subscription filtered by channel_id
-      realtimeSub = supabase
-        .channel(`view-${channelId}`)
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `channel_id=eq.${channelId}`,
-        }, async (payload) => {
-          const { data } = await supabase
-            .from('messages')
-            .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
-            .eq('id', payload.new.id)
-            .single();
-          if (data && !cancelled) {
-            const msg = data as unknown as MessageRow;
-            if (view!.type === 'dm') {
-              const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
-              if (msg.agents?.name !== agentName && !msg.content.includes(`@${agentName}`)) return;
-            }
-            setMessages((prev) => [...prev, msg]);
-          }
-        })
-        .subscribe();
+    if (!channelId) {
+      setMessages([]);
+      return;
     }
 
-    loadAndSubscribe();
+    async function loadMessages() {
+      const res = await fetch(`/api/admin/channels/${channelId}/messages`).catch(() => null);
+      if (!res?.ok || cancelled) return;
+      const body = await res.json();
+      let msgs = (body.messages || []) as MessageRow[];
+
+      // DM view: only messages involving the selected agent
+      if (view!.type === 'dm') {
+        const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
+        msgs = msgs.filter(
+          (m) => m.agents?.name === agentName || m.content.includes(`@${agentName}`)
+        );
+      }
+      if (!cancelled) setMessages(msgs);
+    }
+
+    loadMessages();
+    const timer = setInterval(loadMessages, POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
-      if (realtimeSub) supabase.removeChannel(realtimeSub);
+      clearInterval(timer);
     };
-  }, [view]);
+  }, [view, channels]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -250,11 +206,9 @@ export default function DashboardPage() {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     setSearching(true);
-    const { data } = await supabase.rpc('search_messages', {
-      query_text: searchQuery.trim(),
-      channel_filter: null,
-    });
-    setSearchResults((data || []) as SearchResult[]);
+    const res = await fetch(`/api/admin/search?q=${encodeURIComponent(searchQuery.trim())}`).catch(() => null);
+    const body = res?.ok ? await res.json() : null;
+    setSearchResults((body?.results || []) as SearchResult[]);
     setSearched(true);
     setSearching(false);
   }

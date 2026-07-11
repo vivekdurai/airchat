@@ -2,6 +2,12 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
+  // Non-Supabase backends use token-cookie auth, enforced by the dashboard
+  // layout and admin routes; there is no Supabase session to refresh.
+  if (process.env.AIRCHAT_STORAGE && process.env.AIRCHAT_STORAGE !== 'supabase') {
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(

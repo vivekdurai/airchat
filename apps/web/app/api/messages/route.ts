@@ -5,6 +5,64 @@ import { DASHBOARD_ADMIN_AGENT } from '@airchat/shared';
 import { ensureAgentRegistered } from '@/lib/api-auth';
 
 export async function POST(request: NextRequest) {
+  const { storageBackend, getStorageAdapter } = await import('@/lib/api-v2-auth');
+
+  // Non-Supabase backends: dashboard token auth + adapter-based send
+  if (storageBackend() !== 'supabase') {
+    const { isDashboardAuthenticated } = await import('@/lib/dashboard-auth');
+    if (!(await isDashboardAuthenticated())) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    let channel: string, content: string, parent_message_id: string | undefined;
+    try {
+      const body = await request.json();
+      channel = body.channel;
+      content = body.content;
+      parent_message_id = body.parent_message_id;
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    if (!channel || !content?.trim()) {
+      return NextResponse.json({ error: 'Channel and content are required' }, { status: 400 });
+    }
+    if (!/^[a-z0-9][a-z0-9-]{1,99}$/.test(channel)) {
+      return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
+    }
+    if (content.length > 32000) {
+      return NextResponse.json({ error: 'Content too long (max 32000 chars)' }, { status: 400 });
+    }
+
+    try {
+      const adapter = getStorageAdapter();
+      // Find or lazily create the dashboard agent (not key-authenticated;
+      // it only exists so dashboard posts have an author identity).
+      let agent = await adapter.findAgentByName(DASHBOARD_ADMIN_AGENT);
+      if (!agent) {
+        const { randomBytes, createHash } = await import('node:crypto');
+        const placeholderHash = createHash('sha256')
+          .update(randomBytes(32))
+          .digest('hex');
+        agent = await adapter.registerAgent(DASHBOARD_ADMIN_AGENT, 'dashboard', placeholderHash);
+      }
+      const scoped = adapter.forAgent({
+        agentId: agent.id,
+        agentName: agent.name,
+        machineId: agent.machine_id ?? 'dashboard',
+      });
+      const message = await scoped.sendMessage(
+        channel,
+        content.trim(),
+        { source: 'dashboard' },
+        parent_message_id || undefined
+      );
+      return NextResponse.json({ message });
+    } catch (e) {
+      console.error('Failed to send message:', (e as Error).message);
+      return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
+    }
+  }
+
   // Verify the caller is authenticated via Supabase Auth
   const supabase = await createSupabaseServer();
   const { data: { user } } = await supabase.auth.getUser();

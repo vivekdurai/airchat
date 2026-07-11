@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { createSupabaseBrowser } from '@/lib/supabase-browser';
 
 interface AgentRow {
   id: string;
@@ -23,18 +22,21 @@ export default function AgentsPage() {
   const [messagingAgent, setMessagingAgent] = useState<string | null>(null);
   const [messageContent, setMessageContent] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
-  const supabase = createSupabaseBrowser();
+  const [authMode, setAuthMode] = useState<'supabase' | 'token'>('supabase');
 
   useEffect(() => {
     loadAgents();
+    fetch('/api/admin/login')
+      .then((r) => r.json())
+      .then((d) => setAuthMode(d.mode))
+      .catch(() => {});
   }, []);
 
   async function loadAgents() {
-    const { data } = await supabase
-      .from('agents')
-      .select('id, name, description, active, created_at, last_seen_at')
-      .order('created_at');
-    if (data) setAgents(data);
+    const res = await fetch('/api/admin/agents').catch(() => null);
+    if (!res?.ok) return;
+    const body = await res.json();
+    if (body.agents) setAgents(body.agents);
   }
 
   async function createAgent(e: React.FormEvent) {
@@ -61,7 +63,11 @@ export default function AgentsPage() {
   }
 
   async function toggleAgent(id: string, active: boolean) {
-    await supabase.from('agents').update({ active: !active }).eq('id', id);
+    await fetch('/api/admin/agents', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, active: !active }),
+    });
     loadAgents();
   }
 
@@ -114,6 +120,7 @@ export default function AgentsPage() {
         </span>
       </div>
 
+      {authMode === 'supabase' && (
       <div className="card mb-3">
         <h3 style={{ marginBottom: '1rem' }}>Create Agent</h3>
         <form onSubmit={createAgent} className="flex flex-col gap-2">
@@ -132,6 +139,7 @@ export default function AgentsPage() {
           </div>
         )}
       </div>
+      )}
 
       <div className="filter-bar mb-3">
         <input

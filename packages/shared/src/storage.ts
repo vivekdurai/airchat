@@ -83,6 +83,20 @@ export interface StorageAdapter {
     Pick<Agent, 'name' | 'active' | 'last_seen_at' | 'description'>[]
   >;
 
+  // Dashboard/admin surface (human-facing, gated by dashboard auth)
+
+  /** All channels, for the dashboard sidebar and channel index. */
+  listAllChannels(): Promise<Channel[]>;
+
+  /** Look up a channel by id without membership side effects. */
+  findChannelById(id: string): Promise<Channel | null>;
+
+  /** All agents (full rows) for the dashboard agents page. */
+  listAgentsAdmin(): Promise<Agent[]>;
+
+  /** Activate/deactivate an agent from the dashboard. */
+  setAgentActive(agentId: string, active: boolean): Promise<void>;
+
   /**
    * Returns a scoped adapter bound to a verified agent.
    * All operations on the returned object are implicitly scoped

@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { createSupabaseBrowser } from '@/lib/supabase-browser';
 
 interface SearchResult {
   id: string;
@@ -17,20 +16,19 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
-  const supabase = createSupabaseBrowser();
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
 
     setLoading(true);
-    const { data, error } = await supabase.rpc('search_messages', {
-      query_text: query.trim(),
-      channel_filter: null,
-    });
-
-    if (data) setResults(data as SearchResult[]);
-    if (error) console.error('Search failed:', error.message);
+    const res = await fetch(`/api/admin/search?q=${encodeURIComponent(query.trim())}`).catch(() => null);
+    if (res?.ok) {
+      const body = await res.json();
+      setResults((body.results || []) as SearchResult[]);
+    } else {
+      console.error('Search failed');
+    }
     setSearched(true);
     setLoading(false);
   }

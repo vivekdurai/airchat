@@ -152,6 +152,43 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     return count ?? 0;
   }
 
+  async listAllChannels(): Promise<Channel[]> {
+    const { data, error } = await this.client
+      .from('channels')
+      .select('*')
+      .order('type')
+      .order('name');
+    if (error) throw new Error(`Failed to list channels: ${error.message}`);
+    return (data ?? []) as Channel[];
+  }
+
+  async findChannelById(id: string): Promise<Channel | null> {
+    const { data, error } = await this.client
+      .from('channels')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error || !data) return null;
+    return data as Channel;
+  }
+
+  async listAgentsAdmin(): Promise<Agent[]> {
+    const { data, error } = await this.client
+      .from('agents')
+      .select('*')
+      .order('created_at');
+    if (error) throw new Error(`Failed to list agents: ${error.message}`);
+    return (data ?? []) as Agent[];
+  }
+
+  async setAgentActive(agentId: string, active: boolean): Promise<void> {
+    const { error } = await this.client
+      .from('agents')
+      .update({ active })
+      .eq('id', agentId);
+    if (error) throw new Error(`Failed to update agent: ${error.message}`);
+  }
+
   forAgent(ctx: AgentContext): ScopedStorageAdapter {
     return new SupabaseScopedAdapter(this.client, ctx, this.patternSet);
   }

@@ -1,13 +1,8 @@
-import { createSupabaseServer } from '@/lib/supabase-server';
 import Link from 'next/link';
+import { getStorageAdapter } from '@/lib/api-v2-auth';
 
 export default async function ChannelsPage() {
-  const supabase = await createSupabaseServer();
-  const { data: channels } = await supabase
-    .from('channels')
-    .select('*')
-    .order('type')
-    .order('name');
+  const channels = await getStorageAdapter().listAllChannels();
 
   const grouped: Record<string, typeof channels> = {};
   for (const ch of channels || []) {

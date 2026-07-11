@@ -231,6 +231,39 @@ export class RedisStorageAdapter implements StorageAdapter {
     return count;
   }
 
+  async listAllChannels(): Promise<Channel[]> {
+    const ids = await this.redis.zrange(`${P}channels`, 0, -1);
+    const channels: Channel[] = [];
+    for (const id of ids) {
+      const h = await this.redis.hgetall(`${P}channel:${id}`);
+      if (h.id) channels.push(toChannel(h));
+    }
+    channels.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+    return channels;
+  }
+
+  async findChannelById(id: string): Promise<Channel | null> {
+    const h = await this.redis.hgetall(`${P}channel:${id}`);
+    return h.id ? toChannel(h) : null;
+  }
+
+  async listAgentsAdmin(): Promise<Agent[]> {
+    const ids = await this.redis.smembers(`${P}agents`);
+    const agents: Agent[] = [];
+    for (const id of ids) {
+      const h = await this.redis.hgetall(`${P}agent:${id}`);
+      if (h.id) agents.push(toAgent(h));
+    }
+    agents.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+    return agents;
+  }
+
+  async setAgentActive(agentId: string, active: boolean): Promise<void> {
+    const exists = await this.redis.exists(`${P}agent:${agentId}`);
+    if (!exists) throw new Error('Agent not found');
+    await this.redis.hset(`${P}agent:${agentId}`, 'active', active ? '1' : '0');
+  }
+
   forAgent(ctx: AgentContext): ScopedStorageAdapter {
     return new RedisScopedAdapter(this.redis, ctx);
   }

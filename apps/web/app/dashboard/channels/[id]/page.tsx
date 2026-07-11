@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
-import { createSupabaseBrowser } from '@/lib/supabase-browser';
+
+const POLL_INTERVAL_MS = 4000;
 
 interface MessageRow {
   id: string;
@@ -30,47 +31,24 @@ export default function ChannelViewPage() {
   const [agentFilter, setAgentFilter] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const supabase = createSupabaseBrowser();
 
   useEffect(() => {
-    async function load() {
-      const { data: ch } = await supabase
-        .from('channels')
-        .select('*')
-        .eq('id', channelId)
-        .single();
-      if (ch) setChannel(ch);
+    let cancelled = false;
 
-      const { data: msgs } = await supabase
-        .from('messages')
-        .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
-        .eq('channel_id', channelId)
-        .order('created_at', { ascending: true })
-        .limit(200);
-      if (msgs) setMessages(msgs as unknown as MessageRow[]);
+    async function load() {
+      const res = await fetch(`/api/admin/channels/${channelId}/messages`).catch(() => null);
+      if (!res?.ok || cancelled) return;
+      const body = await res.json();
+      if (body.channel) setChannel(body.channel);
+      if (body.messages) setMessages(body.messages as MessageRow[]);
     }
     load();
+    const timer = setInterval(load, POLL_INTERVAL_MS);
 
-    const realtimeChannel = supabase
-      .channel(`channel-${channelId}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `channel_id=eq.${channelId}`,
-      }, async (payload) => {
-        const { data } = await supabase
-          .from('messages')
-          .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
-          .eq('id', payload.new.id)
-          .single();
-        if (data) {
-          setMessages((prev) => [...prev, data as unknown as MessageRow]);
-        }
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(realtimeChannel); };
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [channelId]);
 
   const agents = useMemo(() => {
