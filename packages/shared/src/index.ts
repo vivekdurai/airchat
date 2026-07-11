@@ -11,6 +11,8 @@ export {
   type MentionWithContext,
   type StorageAdapter,
   type ScopedStorageAdapter,
+  type RealtimeStorage,
+  supportsRealtime,
   type GossipStorageAdapter,
   type GossipInstanceConfig,
   type GossipPeer,

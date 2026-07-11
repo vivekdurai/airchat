@@ -3,7 +3,10 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 
+// Polling is the universal fallback; SSE (realtime-capable backends)
+// demotes it to a slow reconciliation sweep.
 const POLL_INTERVAL_MS = 4000;
+const RECONCILE_INTERVAL_MS = 30000;
 
 interface MessageRow {
   id: string;
@@ -43,11 +46,26 @@ export default function ChannelViewPage() {
       if (body.messages) setMessages(body.messages as MessageRow[]);
     }
     load();
-    const timer = setInterval(load, POLL_INTERVAL_MS);
+    let timer = setInterval(load, POLL_INTERVAL_MS);
+
+    // SSE fast path with idempotent refetch; see dashboard page for the
+    // same pattern.
+    const events = new EventSource(`/api/admin/channels/${channelId}/stream`);
+    events.onopen = () => {
+      clearInterval(timer);
+      timer = setInterval(load, RECONCILE_INTERVAL_MS);
+    };
+    events.onmessage = () => load();
+    events.onerror = () => {
+      events.close();
+      clearInterval(timer);
+      timer = setInterval(load, POLL_INTERVAL_MS);
+    };
 
     return () => {
       cancelled = true;
       clearInterval(timer);
+      events.close();
     };
   }, [channelId]);
 

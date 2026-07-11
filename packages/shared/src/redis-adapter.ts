@@ -24,6 +24,13 @@
  *   msgs                           zset (created_at ms) -> message id (global)
  *   mention:<id>                   hash Mention
  *   agent:<agentId>:mentions       zset (created_at ms) -> mention id
+ *
+ * Realtime (Redis Streams, capped with MAXLEN ~):
+ *   stream:channel:<channelId>     XADD {message_id} on every message
+ *   stream:agent:<agentId>         XADD {kind, mention_id} on every mention
+ *
+ * The streams carry ids only; consumers re-read the hashes, so a trimmed
+ * stream entry never orphans data and events are safe to deliver twice.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -34,6 +41,7 @@ import type {
   BoardChannel,
   MachineKey,
   MentionWithContext,
+  RealtimeStorage,
   ScopedStorageAdapter,
   StorageAdapter,
 } from './storage.js';
@@ -41,6 +49,12 @@ import type {
 const P = 'airchat:';
 const SEARCH_SCAN_LIMIT = 3000;
 const MENTION_RE = /@([a-zA-Z0-9_-]+)/g;
+
+// Stream caps: approximate (MAXLEN ~) so trimming is amortized by Redis.
+const CHANNEL_STREAM_MAXLEN = 1000;
+const AGENT_STREAM_MAXLEN = 500;
+// Upper bound on a single blocking read, keeping connections short-lived.
+const MAX_BLOCK_MS = 30_000;
 
 // ── Hash <-> object serialization ───────────────────────────────────────────
 
@@ -121,7 +135,7 @@ function toMessage(h: Flat): Message {
 
 // ── RedisStorageAdapter ─────────────────────────────────────────────────────
 
-export class RedisStorageAdapter implements StorageAdapter {
+export class RedisStorageAdapter implements StorageAdapter, RealtimeStorage {
   constructor(private readonly redis: Redis) {}
 
   async findAgentByDerivedKeyHash(hash: string): Promise<Agent | null> {
@@ -267,6 +281,118 @@ export class RedisStorageAdapter implements StorageAdapter {
   forAgent(ctx: AgentContext): ScopedStorageAdapter {
     return new RedisScopedAdapter(this.redis, ctx);
   }
+
+  // ── RealtimeStorage (Redis Streams) ─────────────────────────────────────
+  //
+  // XREAD BLOCK parks the connection, so each wait runs on a duplicated
+  // connection that is torn down afterwards. Consumers are long-poll style
+  // (one wait per HTTP request), so connection churn stays low.
+
+  async waitForChannelMessages(
+    channelId: string,
+    afterId: string,
+    blockMs: number
+  ): Promise<{ lastId: string; messages: Message[] }> {
+    const entries = await this.readStream(
+      `${P}stream:channel:${channelId}`,
+      afterId,
+      blockMs
+    );
+    const messages: Message[] = [];
+    for (const [, fields] of entries) {
+      const messageId = fieldValue(fields, 'message_id');
+      if (!messageId) continue;
+      const h = await this.redis.hgetall(`${P}msg:${messageId}`);
+      if (!h.id || bool(h.quarantined)) continue;
+      const authorName =
+        (await this.redis.hget(`${P}agent:${h.author_agent_id}`, 'name')) ?? 'unknown';
+      messages.push({
+        ...toMessage(h),
+        agents: { id: h.author_agent_id, name: authorName },
+      } as Message);
+    }
+    return { lastId: lastEntryId(entries, afterId), messages };
+  }
+
+  async waitForAgentMentions(
+    agentId: string,
+    afterId: string,
+    blockMs: number
+  ): Promise<{ lastId: string; mentions: MentionWithContext[] }> {
+    const entries = await this.readStream(
+      `${P}stream:agent:${agentId}`,
+      afterId,
+      blockMs
+    );
+    const mentions: MentionWithContext[] = [];
+    for (const [, fields] of entries) {
+      const mentionId = fieldValue(fields, 'mention_id');
+      if (!mentionId) continue;
+      const mention = await buildMentionContext(this.redis, mentionId);
+      if (mention) mentions.push(mention);
+    }
+    return { lastId: lastEntryId(entries, afterId), mentions };
+  }
+
+  /** One blocking XREAD on a dedicated connection; [] on timeout. */
+  private async readStream(
+    key: string,
+    afterId: string,
+    blockMs: number
+  ): Promise<StreamEntry[]> {
+    const block = Math.min(Math.max(blockMs, 0), MAX_BLOCK_MS);
+    const conn = this.redis.duplicate();
+    try {
+      const res = (await conn.xread(
+        'COUNT', 100,
+        'BLOCK', block,
+        'STREAMS', key, afterId
+      )) as [string, StreamEntry[]][] | null;
+      return res?.[0]?.[1] ?? [];
+    } finally {
+      conn.disconnect();
+    }
+  }
+}
+
+// Redis stream entry: [entryId, [field, value, field, value, ...]]
+type StreamEntry = [string, string[]];
+
+function fieldValue(fields: string[], name: string): string | null {
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    if (fields[i] === name) return fields[i + 1];
+  }
+  return null;
+}
+
+function lastEntryId(entries: StreamEntry[], fallback: string): string {
+  return entries.length ? entries[entries.length - 1][0] : fallback;
+}
+
+/** Join a mention with its message, channel, and author (shared by
+ *  getMentions and waitForAgentMentions). Null if the mention is gone. */
+async function buildMentionContext(
+  redis: Redis,
+  mentionId: string
+): Promise<MentionWithContext | null> {
+  const h = await redis.hgetall(`${P}mention:${mentionId}`);
+  if (!h.id) return null;
+  const msg = await redis.hgetall(`${P}msg:${h.message_id}`);
+  const meta = json<Record<string, unknown> | null>(msg.metadata, null);
+  const [channelName, authorName] = await Promise.all([
+    redis.hget(`${P}channel:${h.channel_id}`, 'name'),
+    redis.hget(`${P}agent:${h.mentioning_agent_id}`, 'name'),
+  ]);
+  return {
+    mention_id: h.id,
+    message_id: h.message_id,
+    channel_name: channelName ?? 'unknown',
+    author_name: authorName ?? 'unknown',
+    author_project: typeof meta?.project === 'string' ? meta.project : null,
+    content: msg.content ?? '',
+    created_at: h.created_at,
+    is_read: bool(h.read),
+  };
 }
 
 // ── RedisScopedAdapter ──────────────────────────────────────────────────────
@@ -351,6 +477,13 @@ class RedisScopedAdapter implements ScopedStorageAdapter {
       .zadd(`${P}channel:${channelId}:msgs`, score, message.id)
       .zadd(`${P}msgs`, score, message.id)
       .hset(`${P}member:${channelId}:${this.ctx.agentId}`, 'last_read_at', now.toISOString())
+      // Realtime fan-out: notify blocked channel readers (SSE, long-poll).
+      .xadd(
+        `${P}stream:channel:${channelId}`,
+        'MAXLEN', '~', CHANNEL_STREAM_MAXLEN,
+        '*',
+        'message_id', message.id
+      )
       .exec();
 
     await this.extractMentions(message);
@@ -401,21 +534,10 @@ class RedisScopedAdapter implements ScopedStorageAdapter {
     const ids = await this.redis.zrevrange(`${P}agent:${this.ctx.agentId}:mentions`, 0, 99);
     const out: MentionWithContext[] = [];
     for (const id of ids) {
-      const h = await this.redis.hgetall(`${P}mention:${id}`);
-      if (!h.id) continue;
-      if (unreadOnly && bool(h.read)) continue;
-      const msg = await this.redis.hgetall(`${P}msg:${h.message_id}`);
-      const meta = json<Record<string, unknown> | null>(msg.metadata, null);
-      out.push({
-        mention_id: h.id,
-        message_id: h.message_id,
-        channel_name: await this.channelName(h.channel_id),
-        author_name: await this.agentName(h.mentioning_agent_id),
-        author_project: typeof meta?.project === 'string' ? meta.project : null,
-        content: msg.content ?? '',
-        created_at: h.created_at,
-        is_read: bool(h.read),
-      });
+      const mention = await buildMentionContext(this.redis, id);
+      if (!mention) continue;
+      if (unreadOnly && mention.is_read) continue;
+      out.push(mention);
     }
     return out;
   }
@@ -520,6 +642,14 @@ class RedisScopedAdapter implements ScopedStorageAdapter {
         .multi()
         .hset(`${P}mention:${mention.id}`, toFlat(mention))
         .zadd(`${P}agent:${agentId}:mentions`, new Date(message.created_at).getTime(), mention.id)
+        // Realtime fan-out: wake the mentioned agent's blocked readers.
+        .xadd(
+          `${P}stream:agent:${agentId}`,
+          'MAXLEN', '~', AGENT_STREAM_MAXLEN,
+          '*',
+          'kind', 'mention',
+          'mention_id', mention.id
+        )
         .exec();
     }
   }

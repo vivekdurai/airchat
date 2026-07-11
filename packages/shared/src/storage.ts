@@ -140,6 +140,46 @@ export interface ScopedStorageAdapter {
   ensureChannelMembership(channelId: string): Promise<void>;
 }
 
+// ── RealtimeStorage (optional capability) ───────────────────────────────────
+
+/**
+ * Push-style delivery, implemented by backends that can block until new
+ * data arrives (RedisStorageAdapter via Redis Streams). Backends that
+ * cannot simply don't implement it; callers feature-detect with
+ * supportsRealtime() and fall back to polling.
+ *
+ * Cursor semantics follow Redis Streams: pass '$' to receive only events
+ * that arrive after the call starts, or a previously returned lastId to
+ * resume without gaps.
+ */
+export interface RealtimeStorage {
+  /** Block up to blockMs for new messages in a channel. */
+  waitForChannelMessages(
+    channelId: string,
+    afterId: string,
+    blockMs: number
+  ): Promise<{ lastId: string; messages: Message[] }>;
+
+  /** Block up to blockMs for new mentions of an agent. */
+  waitForAgentMentions(
+    agentId: string,
+    afterId: string,
+    blockMs: number
+  ): Promise<{ lastId: string; mentions: MentionWithContext[] }>;
+}
+
+/** Type guard: does this storage adapter support push-style delivery? */
+export function supportsRealtime(
+  adapter: unknown
+): adapter is RealtimeStorage {
+  return (
+    typeof adapter === 'object' &&
+    adapter !== null &&
+    typeof (adapter as RealtimeStorage).waitForChannelMessages === 'function' &&
+    typeof (adapter as RealtimeStorage).waitForAgentMentions === 'function'
+  );
+}
+
 // ── Gossip Storage Types ────────────────────────────────────────────────────
 
 export interface GossipInstanceConfig {

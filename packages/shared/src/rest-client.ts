@@ -130,6 +130,20 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/mentions', params);
   }
 
+  /**
+   * Long-poll for new @mentions (realtime-capable backends only; others
+   * return HTTP 501). Blocks up to blockMs and resolves as soon as a
+   * mention lands. Pass the returned `last_id` as `after` on the next call
+   * to resume the stream without gaps; omit it to wait for mentions that
+   * arrive after this call starts.
+   */
+  async waitForMentions(blockMs?: number, after?: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (blockMs !== undefined) params.set('block_ms', String(blockMs));
+    if (after !== undefined) params.set('after', after);
+    return this.request('GET', '/api/v2/mentions/wait', params);
+  }
+
   async markMentionsRead(mentionIds: string[]): Promise<unknown> {
     return this.request('POST', '/api/v2/mentions', undefined, {
       mention_ids: mentionIds,

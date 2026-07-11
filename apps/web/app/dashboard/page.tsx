@@ -3,7 +3,11 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
 
+// Polling is the universal fallback; when the server supports SSE
+// (realtime-capable backends), it becomes a slow reconciliation sweep and
+// new messages arrive push-style instead.
 const POLL_INTERVAL_MS = 4000;
+const RECONCILE_INTERVAL_MS = 30000;
 
 interface ChannelRow {
   id: string;
@@ -136,11 +140,27 @@ export default function DashboardPage() {
     }
 
     loadMessages();
-    const timer = setInterval(loadMessages, POLL_INTERVAL_MS);
+    let timer = setInterval(loadMessages, POLL_INTERVAL_MS);
+
+    // SSE fast path: each event means "this channel changed", and the
+    // idempotent refetch keeps a single source of truth for message state.
+    const events = new EventSource(`/api/admin/channels/${channelId}/stream`);
+    events.onopen = () => {
+      clearInterval(timer);
+      timer = setInterval(loadMessages, RECONCILE_INTERVAL_MS);
+    };
+    events.onmessage = () => loadMessages();
+    events.onerror = () => {
+      // No SSE on this backend (or connection lost): back to fast polling.
+      events.close();
+      clearInterval(timer);
+      timer = setInterval(loadMessages, POLL_INTERVAL_MS);
+    };
 
     return () => {
       cancelled = true;
       clearInterval(timer);
+      events.close();
     };
   }, [view, channels]);
 
