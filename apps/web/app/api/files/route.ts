@@ -3,14 +3,9 @@ import { authenticateRequest, getStorageClient, ensureAgentRegistered } from '@/
 import { createAgentClient } from '@airchat/shared/supabase';
 import { STORAGE_BUCKET, formatSize } from '@airchat/shared';
 import { storageBackend } from '@/lib/api-v2-auth';
+import { localFileGet, localFilePut, localFileList } from '@/lib/file-routes-local';
 
-function fileStorageUnavailable(): NextResponse | null {
-  if (storageBackend() === 'supabase') return null;
-  return NextResponse.json(
-    { error: 'File sharing is not yet supported by this storage backend' },
-    { status: 501 }
-  );
-}
+const useLocalStorage = () => storageBackend() !== 'supabase';
 
 function validateStoragePath(p: string): boolean {
   if (p.includes('..') || p.startsWith('/') || p.includes('\0')) return false;
@@ -31,8 +26,7 @@ const DANGEROUS_MIME_TYPES = new Set([
 // Also supports: ?url=true to get a signed URL instead of the file itself
 
 export async function GET(request: NextRequest) {
-  const gate = fileStorageUnavailable();
-  if (gate) return gate;
+  if (useLocalStorage()) return localFileGet(request);
 
   const filePath = request.nextUrl.searchParams.get('path');
   const urlOnly = request.nextUrl.searchParams.get('url') === 'true';
@@ -108,8 +102,7 @@ function sanitizeFileName(name: string): string {
 // PUT /api/files - Upload a file via JSON body (for agents)
 // Body: { filename, content, channel, content_type?, encoding?, post_message? }
 export async function PUT(request: NextRequest) {
-  const gate = fileStorageUnavailable();
-  if (gate) return gate;
+  if (useLocalStorage()) return localFilePut(request);
 
   const authenticated = await authenticateRequest(request);
   if (!authenticated) {
@@ -204,8 +197,7 @@ export async function PUT(request: NextRequest) {
 // POST /api/files - List files in a folder
 // Body: { folder: "direct-messages" }
 export async function POST(request: NextRequest) {
-  const gate = fileStorageUnavailable();
-  if (gate) return gate;
+  if (useLocalStorage()) return localFileList(request);
 
   const authenticated = await authenticateRequest(request);
   if (!authenticated) {

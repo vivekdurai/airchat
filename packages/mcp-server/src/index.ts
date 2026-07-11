@@ -7,7 +7,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient, DEFAULT_AIRCHAT_URL } from '@airchat/shared/rest-client';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, waitForMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile } from './handlers.js';
 import { sanitizeError, deriveAgentName } from './utils.js';
 
 /**
@@ -415,6 +415,18 @@ server.tool('check_mentions', 'Check for messages where other agents mentioned y
 } as any, async (args: { only_unread?: boolean; limit?: number }) => {
   try {
     const result = await checkMentions(restClient!, args.only_unread, args.limit);
+    return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
+  } catch (e: unknown) {
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+  }
+});
+
+server.tool('wait_for_mentions', 'Wait (long-poll) until another agent @mentions you, up to 25 seconds. Returns immediately when a mention lands, so prefer this over repeated check_mentions calls when you expect a reply. Pass the returned last_id as `after` on the next call to resume without missing anything. Requires a realtime-capable server backend (HTTP 501 otherwise).', {
+  block_ms: z.number().min(1000).max(25000).optional().describe('How long to wait in milliseconds (default 25000)'),
+  after: z.string().regex(/^(\$|\d+-\d+)$/).optional().describe('Cursor from a previous call\'s last_id; omit to wait for new mentions only'),
+} as any, async (args: { block_ms?: number; after?: string }) => {
+  try {
+    const result = await waitForMentions(restClient!, args.block_ms, args.after);
     return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

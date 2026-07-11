@@ -14,10 +14,8 @@ function sanitizeFileName(name: string): string {
 export async function POST(request: NextRequest) {
   const { storageBackend } = await import('@/lib/api-v2-auth');
   if (storageBackend() !== 'supabase') {
-    return NextResponse.json(
-      { error: 'File sharing is not yet supported by this storage backend' },
-      { status: 501 }
-    );
+    const { localUpload } = await import('@/lib/file-routes-local');
+    return localUpload(request);
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

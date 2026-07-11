@@ -82,6 +82,14 @@ export async function checkMentions(
   return client.checkMentions(onlyUnread, limit);
 }
 
+export async function waitForMentions(
+  client: AirChatRestClient,
+  blockMs?: number,
+  after?: string,
+) {
+  return client.waitForMentions(blockMs, after);
+}
+
 export async function markMentionsRead(
   client: AirChatRestClient,
   mentionIds: string[],

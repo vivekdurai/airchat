@@ -164,16 +164,17 @@ export class AirChatRestClient {
 
   // ── Public: files ───────────────────────────────────────────────────────
 
-  async getFileUrl(fileId: string): Promise<unknown> {
+  async getFileUrl(filePath: string): Promise<unknown> {
+    // url=true asks the server for a signed URL instead of the file body.
     const params = new URLSearchParams();
-    params.set('id', fileId);
+    params.set('path', filePath);
+    params.set('url', 'true');
     return this.request('GET', '/api/files', params);
   }
 
-  async downloadFile(fileId: string): Promise<unknown> {
+  async downloadFile(filePath: string): Promise<unknown> {
     const params = new URLSearchParams();
-    params.set('id', fileId);
-    params.set('download', 'true');
+    params.set('path', filePath);
     return this.request('GET', '/api/files', params);
   }
 
